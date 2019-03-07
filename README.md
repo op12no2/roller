@@ -4,7 +4,7 @@
 <p><a href="https://op12no2.github.io/roller/">https://op12no2.github.io/roller/</a></p>
 <p>The "kr/s" figure is showing thousands of complete rollouts (random games) per second.</p>
 <p>Interestingly when pitted against a true random mover version of itself, Roller wins all of the games, other than sometimes accidentally falling into 3-fold repetition because it does not know that rule.</p>
-<p>Roller can be used in Arena etc like Lozza</a>.</p>
+<p>Roller can be used in Arena etc like <a href="https://github.com/op12no2/lozza">Lozza</a>.</p>
 <p>If rollouts last longer than 450 ply, a draw is assumed, as some crazy games can last longer than 1000 ply.  This does kinda of compromise the no-knowledge (or "zero") element, but I can live with it.</p>
 <p>It does not terminate at known draws like KK for example, because that is  definitely feeding in knowledge; however tempting it is to do so in the name of kr/s.</p>
 <p>You can change the number of seconds Roller takes to move from the entry field above the board, which by default is 10s.</p>
