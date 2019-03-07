@@ -12,7 +12,7 @@ var engine      = null;
 var startFrom   = 'startpos';
 var startFromUI = 'start';
 
-lozData.page    = 'play.htm';
+lozData.page    = 'index.htm';
 lozData.idInfo  = '#info';
 lozData.idStats = '#stats';
 
