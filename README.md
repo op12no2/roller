@@ -10,7 +10,7 @@
 <p>While thinking Roller displays a status above the board of the form:-</p>
 <p>time so far (seconds) | <br />thousands of rollouts (games) so far |<br />thousands of rollouts per second so far |<br />best move so far</p>
 <p>After moving Roller displays informatiion for each root move of the form:-
-<p>move, averege length of rollout (plys), total score and number og games, average score.</p>
+<p>move, average length of rollout (plys), total score and number of games, average score.</p>
 <p>**** depicts the best score.</p>
 
 
