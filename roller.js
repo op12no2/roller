@@ -4,11 +4,13 @@
 // http://op12no2.me/roller-chess
 //
 
-var BUILD = "1";
+var BUILD = "2";
 
 //{{{  history
 /*
 
+2 Show game lengths.
+2 Randomise.
 1 Born.
 
 */
@@ -529,6 +531,7 @@ lozChess.prototype.search = function (node, turn) {
   var moves          = new Uint32Array(MAX_MOVES);
   var scores         = new Array(MAX_MOVES)
   var counts         = new Array(MAX_MOVES)
+  var plys           = new Array(MAX_MOVES)
   var numMoves       = 0;
   var bestScore      = -INFINITY;
   var bestCount      = 0;
@@ -551,6 +554,7 @@ lozChess.prototype.search = function (node, turn) {
       moves[numMoves]  = move;
       scores[numMoves] = 0.0;
       counts[numMoves] = 0;
+      plys[numMoves]   = 0;
       numMoves++;
     }
   
@@ -567,10 +571,14 @@ lozChess.prototype.search = function (node, turn) {
     
     thisIndex = Math.random() * numMoves | 0;
     
+    var ply = board.globalPly;
+    
     board.makeMove(node,moves[thisIndex]);
     
     scores[thisIndex] += this.rollout(node.childNode,nextTurn|0)
     counts[thisIndex] += 1;
+    
+    plys[thisIndex] += board.globalPly - ply;
     
     //}}}
     //{{{  time up or split?
@@ -601,11 +609,12 @@ lozChess.prototype.search = function (node, turn) {
   for (var i=0; i<numMoves; i++) {
 
     let a = scores[i] / counts[i];
+    let p = plys[i]   / counts[i] | 0;
 
     if (moves[i] == bestMove)
-      this.uci.send(board.formatMove(moves[i],SAN_FMT),scores[i],'/',counts[i],'('+a+')','****');
+      this.uci.send(board.formatMove(moves[i],SAN_FMT),p,scores[i],'/',counts[i],'('+a+')','****');
     else
-      this.uci.send(board.formatMove(moves[i],SAN_FMT),scores[i],'/',counts[i],'('+a+')');
+      this.uci.send(board.formatMove(moves[i],SAN_FMT),p,scores[i],'/',counts[i],'('+a+')');
   }
 
   this.stats.bestMove = bestMove;
@@ -763,6 +772,19 @@ lozChess.prototype.rollout = function (node, turn) {
 }
 
 //}}}
+//{{{  .randomise
+
+lozChess.prototype.randomise = function () {
+
+  var d = new Date();
+  var t = d.getTime();
+  var m = t % 1000;
+  var r = 0;
+  for (var i=0; i<m; i++)
+    r = r + Math.random();
+}
+
+//}}}
 
 //}}}
 //{{{  lozBoard class
@@ -774,6 +796,7 @@ function lozBoard () {
   this.lozza        = null;
   this.verbose      = false;
   this.mvFmt        = 0;
+  this.globalPly    = 0;
 
   this.initwCount   = 0;
   this.initbCount   = 0;
@@ -842,6 +865,8 @@ lozBoard.prototype.uncache = function () {
 //{{{  .init
 
 lozBoard.prototype.init = function () {
+
+  this.globalPly = 0;
 
   this.initwCount = 0;
   this.initbCount = 0;
@@ -1418,6 +1443,8 @@ lozBoard.prototype.genEvasions = function(node, turn) {
 
 lozBoard.prototype.makeMove = function (node,move) {
 
+  this.globalPly++;
+
   var b = this.b;
   var z = this.z;
 
@@ -1601,6 +1628,8 @@ lozBoard.prototype.makeMove = function (node,move) {
 //{{{  .unmakeMove
 
 lozBoard.prototype.unmakeMove = function (node,move) {
+
+  this.globalPly--;
 
   var b = this.b;
   var z = this.z;
@@ -2073,8 +2102,8 @@ var NPRO = (KNIGHT-2) << MOVE_PROMAS_BITS | MOVE_PROMOTE_MASK;
 lozNode.prototype.addPromotion = function (move) {
 
   this.moves[this.numMoves++] = move | QPRO;
-  //this.moves[this.numMoves++] = move | RPRO;
-  //this.moves[this.numMoves++] = move | BPRO;
+  this.moves[this.numMoves++] = move | RPRO;
+  this.moves[this.numMoves++] = move | BPRO;
   this.moves[this.numMoves++] = move | NPRO;
 }
 
@@ -2477,7 +2506,7 @@ onmessage = function(e) {
     case 'board':
       //{{{  board
       
-      uci.send('board',lozza.board.fen(board.turn));
+      uci.send('board',lozza.board.fen(lozza.board.turn));
       
       break;
       
@@ -2505,6 +2534,8 @@ onmessage = function(e) {
 
 var lozza         = new lozChess()
 lozza.board.lozza = lozza;
+
+lozza.randomise();
 
 //{{{  node.js
 
