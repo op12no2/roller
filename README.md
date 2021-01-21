@@ -13,7 +13,7 @@
 <p>move, average length of rollout (plys), total score and number of games, average score.</p>
 <p>**** depicts the best score.</p>
 
-## Credits
+## Acknowledgements
 
 https://github.com/oakmac/chessboardjs
 
