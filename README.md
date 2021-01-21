@@ -13,6 +13,14 @@
 <p>move, average length of rollout (plys), total score and number of games, average score.</p>
 <p>**** depicts the best score.</p>
 
+##Play roller online
+
+https://op12no2.github.io/roller
+
+## Play roller on Lichess
+
+https://lichess.org/@/rollerBot
+
 ## Acknowledgements
 
 https://github.com/oakmac/chessboardjs
