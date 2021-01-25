@@ -17,10 +17,6 @@
 
 https://op12no2.github.io/roller
 
-## Play roller on Lichess
-
-https://lichess.org/@/rollerBot
-
 ## Acknowledgements
 
 https://github.com/oakmac/chessboardjs
