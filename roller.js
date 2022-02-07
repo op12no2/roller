@@ -1,7 +1,5 @@
-"use strict"
-
 //
-// http://op12no2.me/roller-chess
+// http://op12no2.me/roller
 //
 
 var BUILD = "2";
@@ -2528,18 +2526,16 @@ onmessage = function(e) {
 
 //}}}
 
-//if (lozzaHost == HOST_NODEJS) {
-  //%NeverOptimizeFunction(lozBoard.prototype.ttInit);
-//}
-
 var lozza         = new lozChess()
 lozza.board.lozza = lozza;
 
 lozza.randomise();
 
-//{{{  node.js
+//{{{  node interface
 
 if (lozzaHost == HOST_NODEJS) {
+
+  var USERESUME = parseFloat(process.version.substring(1)) > 9;
 
   lozza.uci.nodefs = require('fs');
 
@@ -2547,6 +2543,8 @@ if (lozzaHost == HOST_NODEJS) {
 
   process.stdin.on('readable', function() {
     var chunk = process.stdin.read();
+    if (USERESUME)
+      process.stdin.resume();
     if (chunk !== null) {
       onmessage({data: chunk});
     }
