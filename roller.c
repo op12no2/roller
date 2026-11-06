@@ -50,7 +50,7 @@
 #include <unistd.h>
 #endif
 
-#define NAME "Roller 1.4"
+#define NAME "Roller 1.5"
 #define AUTHOR "Claude Fable 5.1"
 
 /* ---------------------------------------------------------------- board */
@@ -339,6 +339,8 @@ static int opt_safe = 0;         /* percent chance of re-rolling a move that lan
 static int opt_capsafe = 0;      /* when capturing, skip captures of a cheaper defended piece */
 static int opt_checksafe = 1;    /* when checking, prefer checks from squares the opponent does not attack */
 static int opt_matefirst = 1;    /* when checking, play a mating check if there is one */
+static int opt_mate = 0;         /* percent chance per ply of looking for a mate in one before anything else */
+static int opt_checkfirst = 0;   /* roll for a check before rolling for a capture */
 
 typedef struct {
   uint64_t rng;
@@ -421,42 +423,70 @@ static int has_legal_move(const Board *b) {
   return 0;
 }
 
+/* captures: partition the chosen captures to the front of m[0..n) and try them */
+static int try_capture(Board *b, Move *m, int n, int *used, uint64_t *rng) {
+  int i, nc = 0, opp = b->side ^ 1;
+  *used = 0;
+  if (opt_mvv) {
+    int best = 0;
+    for (i = 0; i < n; i++) { int v = victim(b, m[i]); if (v > best) best = v; }
+    if (best) for (i = 0; i < n; i++) if (victim(b, m[i]) == best) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
+  } else {
+    for (i = 0; i < n; i++) if (is_capture(b, m[i])) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
+  }
+  if (opt_capsafe) {      /* keep only captures that do not hang a more valuable attacker; the rest stay in the pool */
+    int k = 0;
+    for (i = 0; i < nc; i++)
+      if (val[TYPE(b->sq[MFROM(m[i])])] <= victim(b, m[i]) || !attacked(b, MTO(m[i]), opp)) { Move t = m[i]; m[i] = m[k]; m[k++] = t; }
+    nc = k;
+  }
+  if (nc && make_random(b, m, nc, rng)) return 1;
+  *used = nc;
+  return 0;
+}
+
+/* checks: mating check first, then checks from unattacked squares, then any check */
+static int try_check(Board *b, Move *m, int n, int *used, int look_for_mate, uint64_t *rng) {
+  int i, nc = 0, opp = b->side ^ 1;
+  *used = 0;
+  for (i = 0; i < n; i++) if (gives_check(b, m[i])) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
+  if (nc && look_for_mate) {
+    for (i = 0; i < nc; i++) {
+      Board t = *b;
+      make(&t, m[i]);
+      if (!illegal(&t) && !has_legal_move(&t)) { *b = t; return 1; }
+    }
+  }
+  if (nc && opt_checksafe) {
+    int k = 0;
+    for (i = 0; i < nc; i++) if (!attacked(b, MTO(m[i]), opp)) { Move t = m[i]; m[i] = m[k]; m[k++] = t; }
+    if (k && make_random(b, m, k, rng)) return 1;
+  }
+  if (nc && make_random(b, m, nc, rng)) return 1;
+  *used = nc;
+  return 0;
+}
+
 static int step_uniform(Board *b, uint64_t *rng) {
   Move moves[MAXMOVES], *m = moves;
-  int n = gen_all(b, m), i, nc = 0, opp = b->side ^ 1;
-  if (opt_capture && rnd_below(rng, 100) < opt_capture) {
-    if (opt_mvv) {
-      int best = 0;
-      for (i = 0; i < n; i++) { int v = victim(b, m[i]); if (v > best) best = v; }
-      if (best) for (i = 0; i < n; i++) if (victim(b, m[i]) == best) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
-    } else {
-      for (i = 0; i < n; i++) if (is_capture(b, m[i])) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
+  int n = gen_all(b, m), i, used, opp = b->side ^ 1;
+  int mated = 0;          /* already looked for a mate in one this ply */
+  if (opt_mate && rnd_below(rng, 100) < opt_mate) {
+    for (i = 0; i < n; i++) if (gives_check(b, m[i])) {
+      Board t = *b;
+      make(&t, m[i]);
+      if (!illegal(&t) && !has_legal_move(&t)) { *b = t; return 1; }
     }
-    if (opt_capsafe) {      /* keep only captures that do not hang a more valuable attacker; the rest stay in the pool */
-      int k = 0;
-      for (i = 0; i < nc; i++)
-        if (val[TYPE(b->sq[MFROM(m[i])])] <= victim(b, m[i]) || !attacked(b, MTO(m[i]), opp)) { Move t = m[i]; m[i] = m[k]; m[k++] = t; }
-      nc = k;
-    }
-    if (nc && make_random(b, m, nc, rng)) return 1;
-    m += nc; n -= nc; nc = 0;
+    mated = 1;
   }
-  if (opt_check && rnd_below(rng, 100) < opt_check) {
-    for (i = 0; i < n; i++) if (gives_check(b, m[i])) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
-    if (nc && opt_matefirst) {
-      for (i = 0; i < nc; i++) {
-        Board t = *b;
-        make(&t, m[i]);
-        if (!illegal(&t) && !has_legal_move(&t)) { *b = t; return 1; }
-      }
-    }
-    if (nc && opt_checksafe) {
-      int k = 0;
-      for (i = 0; i < nc; i++) if (!attacked(b, MTO(m[i]), opp)) { Move t = m[i]; m[i] = m[k]; m[k++] = t; }
-      if (k && make_random(b, m, k, rng)) return 1;    /* safe checks first, then any check */
-    }
-    if (nc && make_random(b, m, nc, rng)) return 1;
-    m += nc; n -= nc;
+  int do_cap = opt_capture && rnd_below(rng, 100) < opt_capture;
+  int do_chk = opt_check && rnd_below(rng, 100) < opt_check;
+  if (opt_checkfirst) {
+    if (do_chk) { if (try_check(b, m, n, &used, opt_matefirst && !mated, rng)) return 1; m += used; n -= used; }
+    if (do_cap) { if (try_capture(b, m, n, &used, rng)) return 1; m += used; n -= used; }
+  } else {
+    if (do_cap) { if (try_capture(b, m, n, &used, rng)) return 1; m += used; n -= used; }
+    if (do_chk) { if (try_check(b, m, n, &used, opt_matefirst && !mated, rng)) return 1; m += used; n -= used; }
   }
   if (opt_safe && n > 1 && rnd_below(rng, 100) < opt_safe) {
     /* up to three tries for a move whose destination the opponent does not attack */
@@ -464,7 +494,6 @@ static int step_uniform(Board *b, uint64_t *rng) {
     for (tries = 0; tries < 3 && n > 1; tries++) {
       int r = rnd_below(rng, n);
       if (!attacked(b, MTO(m[r]), opp)) { Move t = m[r]; m[r] = m[0]; m[0] = t; if (make_random(b, m, 1, rng)) return 1; m++; n--; continue; }
-      /* leave it in the list: if every move is unsafe we fall through to uniform */
     }
   }
   return make_random(b, m, n, rng);
@@ -864,6 +893,8 @@ int main(void) {
       out("option name CaptureSafe type check default %s\n", opt_capsafe ? "true" : "false");
       out("option name CheckSafe type check default %s\n", opt_checksafe ? "true" : "false");
       out("option name MateFirst type check default %s\n", opt_matefirst ? "true" : "false");
+      out("option name MatePercent type spin default %d min 0 max 100\n", opt_mate);
+      out("option name CheckFirst type check default %s\n", opt_checkfirst ? "true" : "false");
       out("option name MoveOverhead type spin default %d min 0 max 5000\n", opt_overhead);
       out("option name TimeDivisor type spin default %d min 1 max 200\n", opt_divisor);
       out("uciok\n");
@@ -889,6 +920,8 @@ int main(void) {
       else if (!strcmp(name, "CaptureSafe")) opt_capsafe = !strcmp(value, "true");
       else if (!strcmp(name, "CheckSafe")) opt_checksafe = !strcmp(value, "true");
       else if (!strcmp(name, "MateFirst")) opt_matefirst = !strcmp(value, "true");
+      else if (!strcmp(name, "MatePercent")) { opt_mate = atoi(value); if (opt_mate < 0) opt_mate = 0; if (opt_mate > 100) opt_mate = 100; }
+      else if (!strcmp(name, "CheckFirst")) opt_checkfirst = !strcmp(value, "true");
       else if (!strcmp(name, "SafePercent")) { opt_safe = atoi(value); if (opt_safe < 0) opt_safe = 0; if (opt_safe > 100) opt_safe = 100; }
       else if (!strcmp(name, "MoveOverhead")) opt_overhead = atoi(value);
       else if (!strcmp(name, "TimeDivisor")) { opt_divisor = atoi(value); if (opt_divisor < 1) opt_divisor = 1; }

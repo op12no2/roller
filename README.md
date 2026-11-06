@@ -52,6 +52,8 @@ about 18% faster here.
 | CaptureSafe | false | when capturing, skip captures where a more valuable attacker takes a defended piece |
 | CheckSafe | true | when checking, prefer checks from squares the opponent does not attack |
 | MateFirst | true | when checking, play a mating check if there is one |
+| MatePercent | 0 | with this probability a side looks for a mate in one on every ply, before the capture and check rolls |
+| CheckFirst | false | roll for a check before rolling for a capture |
 | QueenPromotion | false | random games promote to queens only (the root still considers all four pieces) |
 | SafePercent | 0 | with this probability, re-roll up to three times for a move whose destination the opponent does not attack |
 | ReplyMin | false | group each root move's games by the opponent's first reply (chosen round-robin) and score the move by its worst reply instead of its average. A second ply for free, from games already played. |
@@ -110,6 +112,16 @@ per move.
   were polluting the signal.
 - **Both together**: 36.5-3.5 against neither. They stack. Now the
   defaults.
+- **Mate in one on every ply** (`MatePercent` 100): 12.5-27.5, much
+  worse, and 27% slower. Same lesson as capturing 100% of the time: a bias
+  applied always makes the games deterministic where they should be
+  random, and the result stops measuring the position.
+- **Check rate with the new check biases**: 75 scored 23.5, 100 scored
+  16.5, against 50. 50 stays.
+- **Capture rate with the new check biases**: 25 scored 13.5 and 75
+  scored 13, against 50. 50 stays, and it is now clearly a peak.
+- **Checks before captures** (`CheckFirst`): 13-27. The capture roll
+  should come first.
 - **Skipping losing captures** (`CaptureSafe`, don't take a defended piece
   with a more valuable one): 20-20. The recapture is already likely enough
   in a capture-biased world that the random game punishes it anyway.

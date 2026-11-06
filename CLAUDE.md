@@ -36,7 +36,11 @@ One file, `roller.c`, sections marked by comment banners:
   king), `gen_piece`/`gen_all` are pseudo-legal, `make` has no undo, legality
   is checked after making with `illegal()`. `dead()` is insufficient
   material.
-- playouts: `gives_check` is a direct-check test (moved piece attacks the
+- playouts: `step_uniform` rolls for a mate search (MatePercent), then a
+  capture and a check (`try_capture`, `try_check`, order by CheckFirst),
+  then SafePercent, then uniform. Lesson so far: a bias at 100% is always
+  worse than at 50%; the games must stay random to measure anything.
+  `gives_check` is a direct-check test (moved piece attacks the
   king from its destination, via the 0x88 delta tables `ray_dir` and
   `knight_hop` built in `init_rays`); it ignores discovered checks on
   purpose, verified exact otherwise against make+in_check. `make_random` picks a random pseudo-legal move, makes it on the
@@ -98,7 +102,9 @@ Binaries are git-ignored and shipped as GitHub releases.
    28-12; CheckPercent 50 on top of CaptureBest won 26.5 and 25.5 (25 was
    flat at 18 and 16, 75 scored 22); CapturePercent 75 and 100 with
    CaptureBest lost 15.5 and 4.5; MateFirst won 30 and 32, CheckSafe 26
-   and 29, both together 36.5; CaptureSafe 20; QueenPromotion 19; SafePercent flat at
+   and 29, both together 36.5; MatePercent 100 lost 12.5; CheckPercent 75
+   and 100 with the check biases 23.5 and 16.5; CapturePercent 25 and 75
+   with the check biases 13.5 and 13; CheckFirst 13; CaptureSafe 20; QueenPromotion 19; SafePercent flat at
    every rate (18 to 23.5 over five runs); ClipPlies 100 to 600 flat at
    equal time (150 scored 27.5 then 14: that is what 40-game noise looks
    like); ReplyMin lost 4.5-15.5 at 300k
@@ -126,7 +132,8 @@ Binaries are git-ignored and shipped as GitHub releases.
 - Option names are part of the user's tournament config once added to
   Myracle: `Threads`, `ClipPlies`, `Policy`, `ClipScore`, `CapturePercent`,
   `CaptureBest`, `CheckPercent`, `CaptureSafe`, `CheckSafe`, `MateFirst`,
-  `QueenPromotion`, `SafePercent`, `ReplyMin`, `MoveOverhead`, `TimeDivisor`.
+  `MatePercent`, `CheckFirst`, `QueenPromotion`, `SafePercent`, `ReplyMin`,
+  `MoveOverhead`, `TimeDivisor`.
   Add options rather than renaming.
 - Keep it one file, plain C11, no dependencies beyond pthreads.
 
