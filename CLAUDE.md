@@ -52,7 +52,8 @@ One file, `roller.c`, sections marked by comment banners:
   thread watches the clock and limits, prints `info` once a second and the
   final `bestmove`. `best_move` is highest points per game, ties random.
 - console: `perft`, `bench`.
-- uci: the main loop. Windows stdout is set to binary in `main`; keep it, or
+- uci: the main loop. `go ponder` is accepted and the token ignored (it
+  used to swallow the next token and break the clock parse). Windows stdout is set to binary in `main`; keep it, or
   Linux-side GUIs read `bestmove e2e4\r` as illegal.
 
 `build.sh` builds `roller` and `roller.exe` with clang (`--target=x86_64-w64-mingw32`
@@ -72,9 +73,10 @@ Binaries are git-ignored and shipped as GitHub releases.
    `r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10`
    depth 4 = 3894594.
 2. `printf 'bench 5\nquit\n' | ./roller` for speed and how games end.
-   Baseline on the user's Ryzen 9 9950X, 32 threads, clang build, defaults
-   (CapturePercent 50, CaptureBest, CheckPercent 50): 780k games/s, 131M
-   plies/s, 82% of games end as dead positions, 9% in mate. No biases:
+   Baseline on the user's Ryzen 9 9950X, 32 threads, clang build, 1.4
+   defaults (CapturePercent 50, CaptureBest, CheckPercent 50, MateFirst,
+   CheckSafe): about 560k games/s, 93M plies/s, 63% of games end as dead
+   positions, 23% in mate. No biases:
    400k games/s, 110M plies/s. Single
    thread about 5M plies/s. A change that costs more than a few percent
    needs a reason, but speed is not strength: test with games. Bench
@@ -95,14 +97,15 @@ Binaries are git-ignored and shipped as GitHub releases.
    CapturePercent 50 beat 0 by 33-7; CaptureBest beat random captures
    28-12; CheckPercent 50 on top of CaptureBest won 26.5 and 25.5 (25 was
    flat at 18 and 16, 75 scored 22); CapturePercent 75 and 100 with
-   CaptureBest lost 15.5 and 4.5; QueenPromotion 19; SafePercent flat at
+   CaptureBest lost 15.5 and 4.5; MateFirst won 30 and 32, CheckSafe 26
+   and 29, both together 36.5; CaptureSafe 20; QueenPromotion 19; SafePercent flat at
    every rate (18 to 23.5 over five runs); ClipPlies 100 to 600 flat at
    equal time (150 scored 27.5 then 14: that is what 40-game noise looks
    like); ReplyMin lost 4.5-15.5 at 300k
    games/move; ClipScore=Material and Policy=Piece made no difference in
    gauntlets. Each default change was then checked with the 12-game retro
    gauntlet at 20+0.2 on 14 threads: 1.0 scored 3.5, 1.1 scored 6, 1.2
-   scored 5 (noise; trust the self-play). Version 1.0 (pure
+   scored 5, 1.4 scored 6 (noise; trust the self-play). Version 1.0 (pure
    uniform) scored 3.5/12 against the retro six at 20+0.2 on 14 threads.
    The README's "What was tried" section records findings; keep it current.
 4. When piping `quit` after `go`, sleep first; otherwise the search is
@@ -122,8 +125,8 @@ Binaries are git-ignored and shipped as GitHub releases.
   with a short note. Bump `NAME` in `roller.c` to match.
 - Option names are part of the user's tournament config once added to
   Myracle: `Threads`, `ClipPlies`, `Policy`, `ClipScore`, `CapturePercent`,
-  `CaptureBest`, `CheckPercent`, `QueenPromotion`, `SafePercent`, `ReplyMin`,
-  `MoveOverhead`, `TimeDivisor`.
+  `CaptureBest`, `CheckPercent`, `CaptureSafe`, `CheckSafe`, `MateFirst`,
+  `QueenPromotion`, `SafePercent`, `ReplyMin`, `MoveOverhead`, `TimeDivisor`.
   Add options rather than renaming.
 - Keep it one file, plain C11, no dependencies beyond pthreads.
 

@@ -7,10 +7,12 @@
  * games pick uniformly among legal moves, except that a side which can
  * capture does so CapturePercent of the time, taking the most valuable
  * victim (CaptureBest), and a side which can give a direct check does so
- * CheckPercent of the time. Defaults 50, on, 50: together about 500 Elo
- * over pure random in self-play, because material and king safety only
- * matter in a world where hanging pieces get taken and exposed kings get
- * checked. The only other knowledge is the rules of
+ * CheckPercent of the time, preferring a mating check (MateFirst) and then
+ * a check from an unattacked square (CheckSafe). Defaults 50, on, 50, on,
+ * on: together about 900 Elo over pure random in self-play, because
+ * material and king safety only matter in a world where hanging pieces get
+ * taken and exposed kings get checked and mated. The only other knowledge
+ * is the rules of
  * chess: checkmate, stalemate, the fifty-move rule and dead positions end a
  * game; games longer than ClipPlies plies are cut off and scored as draws
  * (or by material with ClipScore=Material, which tested as no better).
@@ -24,8 +26,9 @@
  *
  * Options: Threads, ClipPlies, Policy (Uniform: every legal move equally
  * likely; Piece: pick one of your pieces at random, then one of its moves),
- * ClipScore, CapturePercent, CaptureBest, CheckPercent, QueenPromotion,
- * SafePercent (both tested as no better, off), ReplyMin (score a move by
+ * ClipScore, CapturePercent, CaptureBest, CheckPercent, CheckSafe,
+ * MateFirst, CaptureSafe, QueenPromotion, SafePercent (those three tested
+ * as no better, off), ReplyMin (score a move by
  * its worst opponent reply, from the games already played; tested worse,
  * off by default),
  * MoveOverhead, TimeDivisor. Console: d, eval, perft N, bench [seconds].
@@ -47,7 +50,7 @@
 #include <unistd.h>
 #endif
 
-#define NAME "Roller 1.3"
+#define NAME "Roller 1.4"
 #define AUTHOR "Claude Fable 5.1"
 
 /* ---------------------------------------------------------------- board */
@@ -333,6 +336,9 @@ static int opt_check = 50;       /* percent chance of playing a checking move wh
 static int opt_mvv = 1;          /* when capturing, only the most valuable victims are considered */
 static int opt_qpromo = 0;       /* playouts promote to queen only */
 static int opt_safe = 0;         /* percent chance of re-rolling a move that lands on an attacked square */
+static int opt_capsafe = 0;      /* when capturing, skip captures of a cheaper defended piece */
+static int opt_checksafe = 1;    /* when checking, prefer checks from squares the opponent does not attack */
+static int opt_matefirst = 1;    /* when checking, play a mating check if there is one */
 
 typedef struct {
   uint64_t rng;
@@ -408,9 +414,16 @@ static inline int gives_check(const Board *b, Move m) {
   }
 }
 
+static int has_legal_move(const Board *b) {
+  Move m[MAXMOVES];
+  int n = gen_all(b, m), i;
+  for (i = 0; i < n; i++) { Board t = *b; make(&t, m[i]); if (!illegal(&t)) return 1; }
+  return 0;
+}
+
 static int step_uniform(Board *b, uint64_t *rng) {
   Move moves[MAXMOVES], *m = moves;
-  int n = gen_all(b, m), i, nc = 0;
+  int n = gen_all(b, m), i, nc = 0, opp = b->side ^ 1;
   if (opt_capture && rnd_below(rng, 100) < opt_capture) {
     if (opt_mvv) {
       int best = 0;
@@ -419,11 +432,29 @@ static int step_uniform(Board *b, uint64_t *rng) {
     } else {
       for (i = 0; i < n; i++) if (is_capture(b, m[i])) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
     }
+    if (opt_capsafe) {      /* keep only captures that do not hang a more valuable attacker; the rest stay in the pool */
+      int k = 0;
+      for (i = 0; i < nc; i++)
+        if (val[TYPE(b->sq[MFROM(m[i])])] <= victim(b, m[i]) || !attacked(b, MTO(m[i]), opp)) { Move t = m[i]; m[i] = m[k]; m[k++] = t; }
+      nc = k;
+    }
     if (nc && make_random(b, m, nc, rng)) return 1;
     m += nc; n -= nc; nc = 0;
   }
   if (opt_check && rnd_below(rng, 100) < opt_check) {
     for (i = 0; i < n; i++) if (gives_check(b, m[i])) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
+    if (nc && opt_matefirst) {
+      for (i = 0; i < nc; i++) {
+        Board t = *b;
+        make(&t, m[i]);
+        if (!illegal(&t) && !has_legal_move(&t)) { *b = t; return 1; }
+      }
+    }
+    if (nc && opt_checksafe) {
+      int k = 0;
+      for (i = 0; i < nc; i++) if (!attacked(b, MTO(m[i]), opp)) { Move t = m[i]; m[i] = m[k]; m[k++] = t; }
+      if (k && make_random(b, m, k, rng)) return 1;    /* safe checks first, then any check */
+    }
     if (nc && make_random(b, m, nc, rng)) return 1;
     m += nc; n -= nc;
   }
@@ -432,7 +463,7 @@ static int step_uniform(Board *b, uint64_t *rng) {
     int tries;
     for (tries = 0; tries < 3 && n > 1; tries++) {
       int r = rnd_below(rng, n);
-      if (!attacked(b, MTO(m[r]), b->side ^ 1)) { Move t = m[r]; m[r] = m[0]; m[0] = t; if (make_random(b, m, 1, rng)) return 1; m++; n--; continue; }
+      if (!attacked(b, MTO(m[r]), opp)) { Move t = m[r]; m[r] = m[0]; m[0] = t; if (make_random(b, m, 1, rng)) return 1; m++; n--; continue; }
       /* leave it in the list: if every move is unsafe we fall through to uniform */
     }
   }
@@ -830,6 +861,9 @@ int main(void) {
       out("option name CaptureBest type check default %s\n", opt_mvv ? "true" : "false");
       out("option name QueenPromotion type check default %s\n", opt_qpromo ? "true" : "false");
       out("option name SafePercent type spin default %d min 0 max 100\n", opt_safe);
+      out("option name CaptureSafe type check default %s\n", opt_capsafe ? "true" : "false");
+      out("option name CheckSafe type check default %s\n", opt_checksafe ? "true" : "false");
+      out("option name MateFirst type check default %s\n", opt_matefirst ? "true" : "false");
       out("option name MoveOverhead type spin default %d min 0 max 5000\n", opt_overhead);
       out("option name TimeDivisor type spin default %d min 1 max 200\n", opt_divisor);
       out("uciok\n");
@@ -852,6 +886,9 @@ int main(void) {
       else if (!strcmp(name, "CheckPercent")) { opt_check = atoi(value); if (opt_check < 0) opt_check = 0; if (opt_check > 100) opt_check = 100; }
       else if (!strcmp(name, "CaptureBest")) opt_mvv = !strcmp(value, "true");
       else if (!strcmp(name, "QueenPromotion")) opt_qpromo = !strcmp(value, "true");
+      else if (!strcmp(name, "CaptureSafe")) opt_capsafe = !strcmp(value, "true");
+      else if (!strcmp(name, "CheckSafe")) opt_checksafe = !strcmp(value, "true");
+      else if (!strcmp(name, "MateFirst")) opt_matefirst = !strcmp(value, "true");
       else if (!strcmp(name, "SafePercent")) { opt_safe = atoi(value); if (opt_safe < 0) opt_safe = 0; if (opt_safe > 100) opt_safe = 100; }
       else if (!strcmp(name, "MoveOverhead")) opt_overhead = atoi(value);
       else if (!strcmp(name, "TimeDivisor")) { opt_divisor = atoi(value); if (opt_divisor < 1) opt_divisor = 1; }
@@ -868,6 +905,7 @@ int main(void) {
       while ((tok = strtok(NULL, " "))) {
         char *v = NULL;
         if (!strcmp(tok, "infinite")) { infinite = 1; continue; }
+        if (!strcmp(tok, "ponder")) continue;
         if (!(v = strtok(NULL, " "))) break;
         if (!strcmp(tok, "wtime")) wtime = atoll(v);
         else if (!strcmp(tok, "btime")) btime = atoll(v);
