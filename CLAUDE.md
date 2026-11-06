@@ -44,7 +44,10 @@ One file, `roller.c`, sections marked by comment banners:
   again; this is uniform over legal moves. `playout` returns 2/1/0 for the
   side to move at its start. `step_uniform` and `step_piece` are the two
   policies.
-- search: `go` builds `child[]` for every root move; worker threads cycle
+- search: `position` records a hash of every game position since the last
+  irreversible move in `hist[]`; `go` flags root moves whose child position
+  appears there twice already (`rep_draw`), and `gather` scores those as
+  exactly a draw. `go` builds `child[]` for every root move; worker threads cycle
   over them, one game each, accumulating per-thread atomic stats; a manager
   thread watches the clock and limits, prints `info` once a second and the
   final `bestmove`. `best_move` is highest points per game, ties random.
@@ -74,7 +77,10 @@ Binaries are git-ignored and shipped as GitHub releases.
    plies/s, 82% of games end as dead positions, 9% in mate. No biases:
    400k games/s, 110M plies/s. Single
    thread about 5M plies/s. A change that costs more than a few percent
-   needs a reason, but speed is not strength: test with games.
+   needs a reason, but speed is not strength: test with games. Bench
+   numbers drift 10% with machine state; compare against the previous
+   release binary in the same sitting, not against the numbers here.
+   Hyperthreading pays: 32 threads give 1.5x the games of 16.
 3. A fastchess gauntlet with the Windows exe. Run it from a scratch
    directory (fastchess drops a `config.json`), and cap Threads so the
    opponents get CPU:
@@ -89,7 +95,8 @@ Binaries are git-ignored and shipped as GitHub releases.
    CapturePercent 50 beat 0 by 33-7; CaptureBest beat random captures
    28-12; CheckPercent 50 on top of CaptureBest won 26.5 and 25.5 (25 was
    flat at 18 and 16, 75 scored 22); CapturePercent 75 and 100 with
-   CaptureBest lost 15.5 and 4.5; ReplyMin lost 4.5-15.5 at 300k
+   CaptureBest lost 15.5 and 4.5; QueenPromotion 19; SafePercent flat at
+   every rate (18 to 23.5 over five runs); ReplyMin lost 4.5-15.5 at 300k
    games/move; ClipScore=Material and Policy=Piece made no difference in
    gauntlets. Each default change was then checked with the 12-game retro
    gauntlet at 20+0.2 on 14 threads: 1.0 scored 3.5, 1.1 scored 6, 1.2
@@ -108,7 +115,8 @@ Binaries are git-ignored and shipped as GitHub releases.
   with a short note. Bump `NAME` in `roller.c` to match.
 - Option names are part of the user's tournament config once added to
   Myracle: `Threads`, `ClipPlies`, `Policy`, `ClipScore`, `CapturePercent`,
-  `CaptureBest`, `CheckPercent`, `ReplyMin`, `MoveOverhead`, `TimeDivisor`.
+  `CaptureBest`, `CheckPercent`, `QueenPromotion`, `SafePercent`, `ReplyMin`,
+  `MoveOverhead`, `TimeDivisor`.
   Add options rather than renaming.
 - Keep it one file, plain C11, no dependencies beyond pthreads.
 

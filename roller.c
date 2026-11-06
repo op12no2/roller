@@ -15,7 +15,8 @@
  * game; games longer than ClipPlies plies are cut off and scored as draws
  * (or by material with ClipScore=Material, which tested as no better).
  * Repetition is not detected inside playouts (the fifty-move rule and the
- * clip take care of shuffling).
+ * clip take care of shuffling), but at the root a move that repeats a
+ * position for the third time scores exactly a draw.
  *
  * The reported score is plain material, side to move, 1/3/3/5/9. Depth is
  * the number of games played per root move, seldepth the longest game,
@@ -23,9 +24,10 @@
  *
  * Options: Threads, ClipPlies, Policy (Uniform: every legal move equally
  * likely; Piece: pick one of your pieces at random, then one of its moves),
- * ClipScore, CapturePercent, CaptureBest, CheckPercent, ReplyMin (score a
- * move by its worst opponent reply, from the games already played; tested
- * worse, off by default),
+ * ClipScore, CapturePercent, CaptureBest, CheckPercent, QueenPromotion,
+ * SafePercent (both tested as no better, off), ReplyMin (score a move by
+ * its worst opponent reply, from the games already played; tested worse,
+ * off by default),
  * MoveOverhead, TimeDivisor. Console: d, eval, perft N, bench [seconds].
  */
 #define _GNU_SOURCE
@@ -45,7 +47,7 @@
 #include <unistd.h>
 #endif
 
-#define NAME "Roller 1.2"
+#define NAME "Roller 1.3"
 #define AUTHOR "Claude Fable 5.1"
 
 /* ---------------------------------------------------------------- board */
@@ -81,6 +83,7 @@ static const int k_off[8] = { 17, 16, 15, 1, -1, -15, -16, -17 };
 static const int b_off[4] = { 17, 15, -17, -15 };
 static const int r_off[4] = { 16, 1, -16, -1 };
 static uint8_t castle_mask[128];
+static int gen_qonly;            /* playouts only: promote to queen (QueenPromotion) */
 
 static void add_piece(Board *b, int s, int p) {
   int c = COL(p), t = TYPE(p);
@@ -143,7 +146,7 @@ static int gen_piece(const Board *b, int s, Move *m) {
     int start = c == WHITE ? rank == 1 : rank == 6;
     t = s + fwd;
     if (!sq[t]) {
-      if (promo) { ADD(s, t, Q); ADD(s, t, R); ADD(s, t, B); ADD(s, t, N); }
+      if (promo) { ADD(s, t, Q); if (!gen_qonly) { ADD(s, t, R); ADD(s, t, B); ADD(s, t, N); } }
       else { ADD(s, t, 0); if (start && !sq[t + fwd]) ADD(s, t + fwd, 0); }
     }
     for (i = -1; i <= 1; i += 2) {
@@ -151,7 +154,7 @@ static int gen_piece(const Board *b, int s, Move *m) {
       if (!ONB(t)) continue;
       if (sq[t]) {
         if (COL(sq[t]) != c) {
-          if (promo) { ADD(s, t, Q); ADD(s, t, R); ADD(s, t, B); ADD(s, t, N); }
+          if (promo) { ADD(s, t, Q); if (!gen_qonly) { ADD(s, t, R); ADD(s, t, B); ADD(s, t, N); } }
           else ADD(s, t, 0);
         }
       } else if (t == b->ep) ADD(s, t, 0);
@@ -226,6 +229,15 @@ static inline int illegal(const Board *b) {
 
 static inline int in_check(const Board *b) {
   return attacked(b, b->list[b->side][0], b->side ^ 1);
+}
+
+/* hash of the position for repetition detection: board, side, castling, en passant */
+static uint64_t board_hash(const Board *b) {
+  uint64_t h = 0x9E3779B97F4A7C15ULL, i;
+  for (i = 0; i < 128; i++) if (ONB(i) && b->sq[i]) { h ^= (uint64_t)b->sq[i] * 0x100000001B3ULL + i; h *= 0xBF58476D1CE4E5B9ULL; h ^= h >> 31; }
+  h ^= (uint64_t)b->side | (uint64_t)b->castle << 8 | (uint64_t)b->ep << 16;
+  h *= 0x94D049BB133111EBULL; h ^= h >> 29;
+  return h;
 }
 
 static int gen_legal(const Board *b, Move *m) {
@@ -319,6 +331,8 @@ static int opt_capture = 50;     /* percent chance of playing a capture when one
 static int opt_replymin = 0;     /* score a root move by its worst opponent reply, using the games already played */
 static int opt_check = 50;       /* percent chance of playing a checking move when one exists (direct checks only) */
 static int opt_mvv = 1;          /* when capturing, only the most valuable victims are considered */
+static int opt_qpromo = 0;       /* playouts promote to queen only */
+static int opt_safe = 0;         /* percent chance of re-rolling a move that lands on an attacked square */
 
 typedef struct {
   uint64_t rng;
@@ -413,6 +427,15 @@ static int step_uniform(Board *b, uint64_t *rng) {
     if (nc && make_random(b, m, nc, rng)) return 1;
     m += nc; n -= nc;
   }
+  if (opt_safe && n > 1 && rnd_below(rng, 100) < opt_safe) {
+    /* up to three tries for a move whose destination the opponent does not attack */
+    int tries;
+    for (tries = 0; tries < 3 && n > 1; tries++) {
+      int r = rnd_below(rng, n);
+      if (!attacked(b, MTO(m[r]), b->side ^ 1)) { Move t = m[r]; m[r] = m[0]; m[0] = t; if (make_random(b, m, 1, rng)) return 1; m++; n--; continue; }
+      /* leave it in the list: if every move is unsafe we fall through to uniform */
+    }
+  }
   return make_random(b, m, n, rng);
 }
 
@@ -460,6 +483,9 @@ static int playout(Board b, uint64_t *rng, int *len, int *end) {
 
 static Board root;
 static Board child[MAXMOVES];
+static uint64_t hist[1024];      /* hashes of the positions in the game so far, root included */
+static int nhist;
+static int rep_draw[MAXMOVES];   /* root move repeats a position for the third time: a draw by rule */
 static Move rootmoves[MAXMOVES];
 static int nroot;
 static Thread *threads;
@@ -563,6 +589,7 @@ static void gather(Totals *tot) {
   if (!nroot) tot->mincnt = 0;
   for (i = 0; i < nroot; i++) {
     tot->score[i] = tot->cnt[i] ? (double)tot->pts[i] / (double)tot->cnt[i] : -1;
+    if (rep_draw[i]) { tot->score[i] = 1.0; continue; }
     if (opt_replymin && nrep[i] && tot->cnt[i]) {
       double worst = 3;
       for (k = 0; k < nrep[i]; k++) {
@@ -593,6 +620,7 @@ static int best_move(const Totals *tot, uint64_t *rng) {
 static void start_workers(void) {
   int j;
   atomic_store(&stop_flag, 0);
+  gen_qonly = opt_qpromo;
   for (j = 0; j < nthreads; j++) {
     Thread *t = &threads[j];
     _Atomic uint32_t *rc = t->rcnt, *rp = t->rpts;
@@ -612,6 +640,7 @@ static void join_workers(void) {
   int j;
   atomic_store(&stop_flag, 1);
   for (j = 0; j < nthreads; j++) pthread_join(threads[j].th, NULL);
+  gen_qonly = 0;
 }
 
 static void print_info(const Totals *tot, long long elapsed, int best) {
@@ -679,6 +708,18 @@ static void go(long long wtime, long long btime, long long winc, long long binc,
   for (i = 0; i < nroot; i++) {
     child[i] = root; make(&child[i], rootmoves[i]);
     nrep[i] = opt_replymin ? gen_legal(&child[i], replies[i]) : 0;
+    rep_draw[i] = 0;
+    if (child[i].hm) {
+      uint64_t h = board_hash(&child[i]);
+      int k, seen = 0;
+      for (k = 0; k < nhist; k++) if (hist[k] == h) seen++;
+      rep_draw[i] = seen >= 2;
+    }
+  }
+  {
+    char buf[1024] = "", *p = buf;
+    for (i = 0; i < nroot; i++) if (rep_draw[i] && p - buf < 1000) p += sprintf(p, " %s", move_str(rootmoves[i]));
+    if (buf[0]) out("info string threefold repetition would be a draw:%s\n", buf);
   }
   if (nroot == 1 && !infinite) {
     out("info depth 0 score cp %d nodes 0 time 0 pv %s\nbestmove %s\n", material(&root), move_str(rootmoves[0]), move_str(rootmoves[0]));
@@ -716,7 +757,7 @@ static uint64_t perft(const Board *b, int depth) {
 static void bench(int secs) {
   Totals tot;
   long long t0 = now_ms();
-  nroot = 1; child[0] = root; rootmoves[0] = 0; nrep[0] = 0;
+  nroot = 1; child[0] = root; rootmoves[0] = 0; nrep[0] = 0; rep_draw[0] = 0;
   start_workers();
   sleep_ms(secs * 1000);
   join_workers();
@@ -743,12 +784,16 @@ static void position(char *s) {
   if (moves) *moves = 0;
   if (!strncmp(s, "startpos", 8)) set_fen(&root, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
   else if (!strncmp(s, "fen", 3)) set_fen(&root, s + 4);
+  nhist = 0;
+  hist[nhist++] = board_hash(&root);
   if (!moves) return;
   for (char *tok = strtok(moves + 5, " \r\n"); tok; tok = strtok(NULL, " \r\n")) {
     Move m[MAXMOVES];
     int n = gen_legal(&root, m), i;
     for (i = 0; i < n; i++) if (!strcmp(move_str(m[i]), tok)) { make(&root, m[i]); break; }
     if (i == n) break;
+    if (root.hm == 0) nhist = 0;              /* nothing before an irreversible move can repeat */
+    if (nhist < 1024) hist[nhist++] = board_hash(&root);
   }
 }
 
@@ -783,6 +828,8 @@ int main(void) {
       out("option name ReplyMin type check default %s\n", opt_replymin ? "true" : "false");
       out("option name CheckPercent type spin default %d min 0 max 100\n", opt_check);
       out("option name CaptureBest type check default %s\n", opt_mvv ? "true" : "false");
+      out("option name QueenPromotion type check default %s\n", opt_qpromo ? "true" : "false");
+      out("option name SafePercent type spin default %d min 0 max 100\n", opt_safe);
       out("option name MoveOverhead type spin default %d min 0 max 5000\n", opt_overhead);
       out("option name TimeDivisor type spin default %d min 1 max 200\n", opt_divisor);
       out("uciok\n");
@@ -804,6 +851,8 @@ int main(void) {
       else if (!strcmp(name, "ReplyMin")) opt_replymin = !strcmp(value, "true");
       else if (!strcmp(name, "CheckPercent")) { opt_check = atoi(value); if (opt_check < 0) opt_check = 0; if (opt_check > 100) opt_check = 100; }
       else if (!strcmp(name, "CaptureBest")) opt_mvv = !strcmp(value, "true");
+      else if (!strcmp(name, "QueenPromotion")) opt_qpromo = !strcmp(value, "true");
+      else if (!strcmp(name, "SafePercent")) { opt_safe = atoi(value); if (opt_safe < 0) opt_safe = 0; if (opt_safe > 100) opt_safe = 100; }
       else if (!strcmp(name, "MoveOverhead")) opt_overhead = atoi(value);
       else if (!strcmp(name, "TimeDivisor")) { opt_divisor = atoi(value); if (opt_divisor < 1) opt_divisor = 1; }
     } else if (!strcmp(tok, "ucinewgame")) {

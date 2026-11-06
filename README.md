@@ -16,7 +16,10 @@ The only knowledge in it is the rules of chess. A game ends by checkmate,
 stalemate, the fifty-move rule or a dead position (bare kings, a lone
 minor, same-coloured bishops). Games longer than `ClipPlies` plies are cut
 off and count as draws. Repetition is not checked inside the random games;
-the fifty-move rule and the clip deal with shuffling.
+the fifty-move rule and the clip deal with shuffling. At the root, a move
+that would repeat a position for the third time scores exactly a draw, so
+the engine neither stumbles into threefold repetition when ahead nor misses
+it when behind.
 
 The score it reports is plain material from the side to move, 1/3/3/5/9.
 Depth is the number of games played per root move, seldepth the longest
@@ -44,6 +47,8 @@ about 18% faster here.
 | CapturePercent | 50 | with this probability a side that can capture does capture (Uniform policy only). 0 is pure uniform random. Games become short trade-fests that mostly end as dead positions. |
 | CaptureBest | true | when the capture roll fires, only captures of the most valuable victim are considered. Beat plain random captures 28-12 in self-play. |
 | CheckPercent | 50 | with this probability a side that can give a direct check does so. Discovered checks don't count. 0 turns it off. |
+| QueenPromotion | false | random games promote to queens only (the root still considers all four pieces) |
+| SafePercent | 0 | with this probability, re-roll up to three times for a move whose destination the opponent does not attack |
 | ReplyMin | false | group each root move's games by the opponent's first reply (chosen round-robin) and score the move by its worst reply instead of its average. A second ply for free, from games already played. |
 | MoveOverhead | 50 | milliseconds kept back per move |
 | TimeDivisor | 25 | spends remaining time / TimeDivisor + 3/4 of the increment per move |
@@ -90,6 +95,17 @@ per move.
 - **More captures**: with CaptureBest on, capturing 75% of the time lost
   15.5-24.5 and 100% lost 4.5-35.5. Too greedy: the games stop being random
   enough to measure anything.
+- **Avoiding attacked squares** (`SafePercent`): re-roll a move whose
+  destination the opponent attacks. Flat at every rate: 18, 23.5, 21, 19.5
+  and 22 out of 40 for 25, 50, 50, 75 and 100 percent, at a 20% speed cost.
+  Off.
+- **Threefold repetition at the root**: a move that repeats a position for
+  the third time scores exactly a draw. Rules, not a heuristic, and it
+  stops the engine shuffling into a draw when it is ahead; two of the
+  twelve gauntlet games had ended that way.
+- **Queen promotions only** (`QueenPromotion`): 19-21, nothing. Promotions
+  are rare enough in 170-ply games that the one-in-four queen does not
+  matter.
 - **Scoring clipped games by material** (`ClipScore=Material`): no
   effect, with or without the capture bias. Most clipped games are
   shuffling with little material left to score.
