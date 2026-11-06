@@ -49,7 +49,9 @@ One file, `roller.c`, sections marked by comment banners:
 - uci: the main loop. Windows stdout is set to binary in `main`; keep it, or
   Linux-side GUIs read `bestmove e2e4\r` as illegal.
 
-`build.sh` builds `roller` (gcc -O3) and `roller.exe` (mingw-w64, static).
+`build.sh` builds `roller` and `roller.exe` with clang (`--target=x86_64-w64-mingw32`
+for the exe, static); clang measured 18% faster than gcc on both targets.
+`CC=gcc ./build.sh` falls back to gcc and mingw-gcc.
 Binaries are git-ignored and shipped as GitHub releases.
 
 ## Testing
@@ -64,18 +66,26 @@ Binaries are git-ignored and shipped as GitHub releases.
    `r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10`
    depth 4 = 3894594.
 2. `printf 'bench 5\nquit\n' | ./roller` for speed and how games end.
-   Baseline on the user's Ryzen 9 9950X, 32 threads: Uniform 350k games/s,
-   95M plies/s; Piece 610k games/s, 157M plies/s. Single thread about
-   4.5M plies/s. A change that costs more than a few percent needs a reason.
+   Baseline on the user's Ryzen 9 9950X, 32 threads, clang build, defaults
+   (CapturePercent 50): 810k games/s, 148M plies/s, 78% of games end as
+   dead positions. CapturePercent 0: 400k games/s, 110M plies/s. Single
+   thread about 5M plies/s. A change that costs more than a few percent
+   needs a reason, but speed is not strength: test with games.
 3. A fastchess gauntlet with the Windows exe. Run it from a scratch
    directory (fastchess drops a `config.json`), and cap Threads so the
    opponents get CPU:
    `~/fastchess/fastchess -tournament gauntlet -seeds 1 -engine cmd=~/roller/roller.exe name=Roller option.Threads=14 -engine cmd=~/retro/tech.exe name=Tech -engine cmd=~/retro/beal.exe name=Beal -each tc=20+0.2 proto=uci -rounds 1 -games 2 -repeat -concurrency 2 -pgnout file=m.pgn`
    Every game must end by mate, draw or resignation, never by illegal move
-   or time loss. Baseline, 2 games each against the six retro engines at
-   20+0.2: 3.5/12, beating Beal 2-0 and Kotok 1.5-0.5, losing 0-2 to Tech,
-   Turochamp, Bernstein and SOMA. It gives material away freely because
-   uniform random games barely register it; that is expected.
+   or time loss. Gauntlets of 24 games are noisy (the same config scored
+   11/24 and 6.5/24 in two runs), so for comparing options prefer
+   self-play with a fixed `nodes=` budget (nodes = games per move for this
+   engine), which is also immune to CPU contention:
+   `~/fastchess/fastchess -engine cmd=./roller.exe name=New option.X=... -engine cmd=./roller.exe name=Old -each nodes=60000 proto=uci option.Threads=7 -rounds 20 -games 2 -repeat -concurrency 4 -pgnout file=sp.pgn`
+   Results so far: CapturePercent 50 beat 0 by 33-7 at 60k games/move;
+   ReplyMin lost 4.5-15.5 at 300k games/move; ClipScore=Material and
+   Policy=Piece made no difference in gauntlets. Version 1.0 (pure
+   uniform) scored 3.5/12 against the retro six at 20+0.2 on 14 threads.
+   The README's "What was tried" section records findings; keep it current.
 4. When piping `quit` after `go`, sleep first; otherwise the search is
    stopped at once.
 
@@ -87,13 +97,14 @@ Binaries are git-ignored and shipped as GitHub releases.
 - Releases carry `roller.exe` and `roller`: `gh release create vX.Y roller.exe roller`
   with a short note. Bump `NAME` in `roller.c` to match.
 - Option names are part of the user's tournament config once added to
-  Myracle: `Threads`, `ClipPlies`, `Policy`, `MoveOverhead`, `TimeDivisor`.
+  Myracle: `Threads`, `ClipPlies`, `Policy`, `ClipScore`, `CapturePercent`,
+  `ReplyMin`, `MoveOverhead`, `TimeDivisor`.
   Add options rather than renaming.
 - Keep it one file, plain C11, no dependencies beyond pthreads.
 
 ## Ideas queued (see README "Ideas not yet tried")
 
-Material scoring of clipped games, capture-biased policy, piece weighting,
-using the opponent's first reply as a free second ply. Each should be an
-option with the current behaviour as default, measured with `bench` and a
-gauntlet before and after.
+Most-valuable-capture preference, check preference, weighted piece choice.
+Each should be an option with the current behaviour as default, measured
+with `bench` and self-play before and after, then documented in the README
+whether it worked or not.

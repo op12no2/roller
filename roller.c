@@ -2,11 +2,15 @@
  * roller - a chess engine with no search.
  *
  * For every legal move in the root position, play random games to the end
- * (uniformly random legal moves on both sides, nothing else) and score them
- * win 2, draw 1, loss 0. The move with the most points per game is played.
- * Monte Carlo tree search without the tree. The only knowledge is the rules
- * of chess: checkmate, stalemate, the fifty-move rule and dead positions end
- * a game; games longer than ClipPlies plies are cut off and scored as draws.
+ * and score them win 2, draw 1, loss 0. The move with the most points per
+ * game is played. Monte Carlo tree search without the tree. The random
+ * games pick uniformly among legal moves, except that a side which can
+ * capture does so CapturePercent of the time (default 50: in self-play this
+ * one bias beat pure random 33-7, because material only matters in a world
+ * where hanging pieces get taken). The only other knowledge is the rules of
+ * chess: checkmate, stalemate, the fifty-move rule and dead positions end a
+ * game; games longer than ClipPlies plies are cut off and scored as draws
+ * (or by material with ClipScore=Material, which tested as no better).
  * Repetition is not detected inside playouts (the fifty-move rule and the
  * clip take care of shuffling).
  *
@@ -16,6 +20,8 @@
  *
  * Options: Threads, ClipPlies, Policy (Uniform: every legal move equally
  * likely; Piece: pick one of your pieces at random, then one of its moves),
+ * ClipScore, CapturePercent, ReplyMin (score a move by its worst opponent
+ * reply, from the games already played; tested worse, off by default),
  * MoveOverhead, TimeDivisor. Console: d, eval, perft N, bench [seconds].
  */
 #define _GNU_SOURCE
@@ -35,7 +41,7 @@
 #include <unistd.h>
 #endif
 
-#define NAME "Roller 1.0"
+#define NAME "Roller 1.1"
 #define AUTHOR "Claude Fable 5.1"
 
 /* ---------------------------------------------------------------- board */
@@ -304,6 +310,9 @@ enum { POL_UNIFORM = 0, POL_PIECE };
 enum { END_MATE = 0, END_STALEMATE, END_FIFTY, END_DEAD, END_CLIP, END_COUNT };
 
 static int opt_threads = 1, opt_clip = 300, opt_policy = POL_UNIFORM, opt_overhead = 50, opt_divisor = 25;
+static int opt_clipmat = 0;      /* score clipped games by material instead of as draws */
+static int opt_capture = 50;     /* percent chance of playing a capture when one exists (Uniform policy) */
+static int opt_replymin = 0;     /* score a root move by its worst opponent reply, using the games already played */
 
 typedef struct {
   uint64_t rng;
@@ -311,6 +320,8 @@ typedef struct {
   _Atomic uint32_t cnt[MAXMOVES], pts[MAXMOVES];
   _Atomic uint64_t games, plies, ends[END_COUNT];
   _Atomic uint32_t maxlen;
+  _Atomic uint32_t *rcnt, *rpts;   /* [root move * MAXMOVES + reply], ReplyMin only */
+  uint8_t rj[MAXMOVES];            /* next reply to try per root move */
   pthread_t th;
   char pad[64];
 } Thread;
@@ -336,9 +347,21 @@ static inline int make_random(Board *b, Move *m, int n, uint64_t *rng) {
   return 0;
 }
 
+static inline int is_capture(const Board *b, Move m) {
+  int to = MTO(m);
+  return b->sq[to] || (to == b->ep && TYPE(b->sq[MFROM(m)]) == P);
+}
+
 static int step_uniform(Board *b, uint64_t *rng) {
   Move m[MAXMOVES];
-  return make_random(b, m, gen_all(b, m), rng);
+  int n = gen_all(b, m);
+  if (opt_capture && rnd_below(rng, 100) < opt_capture) {
+    int i, nc = 0;
+    for (i = 0; i < n; i++) if (is_capture(b, m[i])) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
+    if (nc && make_random(b, m, nc, rng)) return 1;
+    return make_random(b, m + nc, n - nc, rng);
+  }
+  return make_random(b, m, n, rng);
 }
 
 static int step_piece(Board *b, uint64_t *rng) {
@@ -360,7 +383,16 @@ static int playout(Board b, uint64_t *rng, int *len, int *end) {
   for (ply = 0;; ply++) {
     if (b.hm >= 100) { *end = END_FIFTY; break; }
     if (dead(&b)) { *end = END_DEAD; break; }
-    if (ply >= opt_clip) { *end = END_CLIP; break; }
+    if (ply >= opt_clip) {
+      *end = END_CLIP;
+      if (opt_clipmat) {
+        int d = material(&b);          /* side to move at the clip */
+        int r = d > 0 ? 2 : d < 0 ? 0 : 1;
+        *len = ply;
+        return (ply & 1) ? 2 - r : r;
+      }
+      break;
+    }
     if (!(opt_policy == POL_PIECE ? step_piece(&b, rng) : step_uniform(&b, rng))) {
       *len = ply;
       if (!in_check(&b)) { *end = END_STALEMATE; return 1; }
@@ -424,12 +456,24 @@ static void out(const char *fmt, ...) {
   pthread_mutex_unlock(&out_mutex);
 }
 
+static Move replies[MAXMOVES][MAXMOVES];   /* legal replies to each root move, ReplyMin only */
+static int nrep[MAXMOVES];
+
 static void *worker(void *arg) {
   Thread *t = arg;
-  int i = nroot ? t->id % nroot : 0, len, end;
+  int i = nroot ? t->id % nroot : 0, len, end, r;
   while (!atomic_load_explicit(&stop_flag, memory_order_relaxed)) {
-    int r = playout(child[i], &t->rng, &len, &end);
-    atomic_fetch_add_explicit(&t->pts[i], 2 - r, memory_order_relaxed);
+    if (opt_replymin && nrep[i]) {
+      /* opponent's first reply is chosen round-robin, then the game is random from there */
+      int j = t->rj[i];
+      Board b = child[i];
+      make(&b, replies[i][j]);
+      r = playout(b, &t->rng, &len, &end);          /* from our side's view already */
+      atomic_fetch_add_explicit(&t->rcnt[i * MAXMOVES + j], 1, memory_order_relaxed);
+      atomic_fetch_add_explicit(&t->rpts[i * MAXMOVES + j], r, memory_order_relaxed);
+      t->rj[i] = (uint8_t)(j + 1 == nrep[i] ? 0 : j + 1);
+    } else r = 2 - playout(child[i], &t->rng, &len, &end);
+    atomic_fetch_add_explicit(&t->pts[i], r, memory_order_relaxed);
     atomic_fetch_add_explicit(&t->cnt[i], 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&t->games, 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&t->plies, len, memory_order_relaxed);
@@ -441,10 +485,14 @@ static void *worker(void *arg) {
   return NULL;
 }
 
-typedef struct { uint64_t cnt[MAXMOVES], pts[MAXMOVES], games, plies, ends[END_COUNT]; uint32_t maxlen, mincnt; } Totals;
+typedef struct {
+  uint64_t cnt[MAXMOVES], pts[MAXMOVES], games, plies, ends[END_COUNT];
+  double score[MAXMOVES];          /* points per game, or the worst reply's with ReplyMin */
+  uint32_t maxlen, mincnt;
+} Totals;
 
 static void gather(Totals *tot) {
-  int i, j;
+  int i, j, k;
   memset(tot, 0, sizeof *tot);
   for (j = 0; j < nthreads; j++) {
     Thread *t = &threads[j];
@@ -461,14 +509,29 @@ static void gather(Totals *tot) {
   tot->mincnt = UINT32_MAX;
   for (i = 0; i < nroot; i++) if (tot->cnt[i] < tot->mincnt) tot->mincnt = (uint32_t)tot->cnt[i];
   if (!nroot) tot->mincnt = 0;
+  for (i = 0; i < nroot; i++) {
+    tot->score[i] = tot->cnt[i] ? (double)tot->pts[i] / (double)tot->cnt[i] : -1;
+    if (opt_replymin && nrep[i] && tot->cnt[i]) {
+      double worst = 3;
+      for (k = 0; k < nrep[i]; k++) {
+        uint64_t c = 0, p = 0;
+        for (j = 0; j < nthreads; j++) {
+          c += atomic_load_explicit(&threads[j].rcnt[i * MAXMOVES + k], memory_order_relaxed);
+          p += atomic_load_explicit(&threads[j].rpts[i * MAXMOVES + k], memory_order_relaxed);
+        }
+        if (c && (double)p / (double)c < worst) worst = (double)p / (double)c;
+      }
+      if (worst <= 2) tot->score[i] = worst;
+    }
+  }
 }
 
-/* best = highest points per game; ties broken at random */
+/* best = highest score (points per game, or worst-reply points per game); ties broken at random */
 static int best_move(const Totals *tot, uint64_t *rng) {
   int i, best = 0, nties = 0;
   double bestv = -1;
   for (i = 0; i < nroot; i++) {
-    double v = tot->cnt[i] ? (double)tot->pts[i] / (double)tot->cnt[i] : -1;
+    double v = tot->score[i];
     if (v > bestv + 1e-12) { bestv = v; best = i; nties = 1; }
     else if (v > bestv - 1e-12 && rnd_below(rng, ++nties) == 0) best = i;
   }
@@ -480,7 +543,13 @@ static void start_workers(void) {
   atomic_store(&stop_flag, 0);
   for (j = 0; j < nthreads; j++) {
     Thread *t = &threads[j];
+    _Atomic uint32_t *rc = t->rcnt, *rp = t->rpts;
     memset(t, 0, sizeof *t);
+    t->rcnt = rc; t->rpts = rp;
+    if (opt_replymin) {
+      if (!t->rcnt) { t->rcnt = calloc(MAXMOVES * MAXMOVES, sizeof *t->rcnt); t->rpts = calloc(MAXMOVES * MAXMOVES, sizeof *t->rpts); }
+      else { memset(t->rcnt, 0, MAXMOVES * MAXMOVES * sizeof *t->rcnt); memset(t->rpts, 0, MAXMOVES * MAXMOVES * sizeof *t->rpts); }
+    }
     t->id = j;
     t->rng = (uint64_t)now_ms() * 0x9E3779B97F4A7C15ULL ^ ((uint64_t)(j + 1) << 32) ^ (uint64_t)rand();
     pthread_create(&t->th, NULL, worker, t);
@@ -495,7 +564,7 @@ static void join_workers(void) {
 
 static void print_info(const Totals *tot, long long elapsed, int best) {
   long long ms = elapsed > 0 ? elapsed : 1;
-  double wr = tot->cnt[best] ? 50.0 * (double)tot->pts[best] / (double)tot->cnt[best] : 0;
+  double wr = tot->score[best] >= 0 ? 50.0 * tot->score[best] : 0;
   out("info depth %u seldepth %u score cp %d nodes %llu nps %llu time %lld pv %s\n",
       tot->mincnt, tot->maxlen, material(&root), (unsigned long long)tot->plies,
       (unsigned long long)(tot->plies * 1000 / ms), elapsed, move_str(rootmoves[best]));
@@ -543,6 +612,7 @@ static void stop_search(void) {
 static void set_threads(int n) {
   if (n < 1) n = 1;
   if (n > 512) n = 512;
+  for (int j = 0; j < nthreads; j++) { free(threads[j].rcnt); free(threads[j].rpts); }
   free(threads);
   nthreads = n;
   threads = calloc(nthreads, sizeof(Thread));
@@ -554,7 +624,10 @@ static void go(long long wtime, long long btime, long long winc, long long binc,
   t_start = now_ms();
   nroot = gen_legal(&root, rootmoves);
   if (!nroot) { out("info string no legal moves\nbestmove 0000\n"); return; }
-  for (i = 0; i < nroot; i++) { child[i] = root; make(&child[i], rootmoves[i]); }
+  for (i = 0; i < nroot; i++) {
+    child[i] = root; make(&child[i], rootmoves[i]);
+    nrep[i] = opt_replymin ? gen_legal(&child[i], replies[i]) : 0;
+  }
   if (nroot == 1 && !infinite) {
     out("info depth 0 score cp %d nodes 0 time 0 pv %s\nbestmove %s\n", material(&root), move_str(rootmoves[0]), move_str(rootmoves[0]));
     return;
@@ -591,7 +664,7 @@ static uint64_t perft(const Board *b, int depth) {
 static void bench(int secs) {
   Totals tot;
   long long t0 = now_ms();
-  nroot = 1; child[0] = root; rootmoves[0] = 0;
+  nroot = 1; child[0] = root; rootmoves[0] = 0; nrep[0] = 0;
   start_workers();
   sleep_ms(secs * 1000);
   join_workers();
@@ -652,6 +725,9 @@ int main(void) {
       out("option name Threads type spin default %d min 1 max 512\n", opt_threads);
       out("option name ClipPlies type spin default %d min 2 max 10000\n", opt_clip);
       out("option name Policy type combo default Uniform var Uniform var Piece\n");
+      out("option name ClipScore type combo default %s var Draw var Material\n", opt_clipmat ? "Material" : "Draw");
+      out("option name CapturePercent type spin default %d min 0 max 100\n", opt_capture);
+      out("option name ReplyMin type check default %s\n", opt_replymin ? "true" : "false");
       out("option name MoveOverhead type spin default %d min 0 max 5000\n", opt_overhead);
       out("option name TimeDivisor type spin default %d min 1 max 200\n", opt_divisor);
       out("uciok\n");
@@ -668,6 +744,9 @@ int main(void) {
       if (!strcmp(name, "Threads")) set_threads(atoi(value));
       else if (!strcmp(name, "ClipPlies")) { opt_clip = atoi(value); if (opt_clip < 2) opt_clip = 2; }
       else if (!strcmp(name, "Policy")) opt_policy = !strcmp(value, "Piece") ? POL_PIECE : POL_UNIFORM;
+      else if (!strcmp(name, "ClipScore")) opt_clipmat = !strcmp(value, "Material");
+      else if (!strcmp(name, "CapturePercent")) { opt_capture = atoi(value); if (opt_capture < 0) opt_capture = 0; if (opt_capture > 100) opt_capture = 100; }
+      else if (!strcmp(name, "ReplyMin")) opt_replymin = !strcmp(value, "true");
       else if (!strcmp(name, "MoveOverhead")) opt_overhead = atoi(value);
       else if (!strcmp(name, "TimeDivisor")) { opt_divisor = atoi(value); if (opt_divisor < 1) opt_divisor = 1; }
     } else if (!strcmp(tok, "ucinewgame")) {
