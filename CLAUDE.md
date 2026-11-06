@@ -36,7 +36,10 @@ One file, `roller.c`, sections marked by comment banners:
   king), `gen_piece`/`gen_all` are pseudo-legal, `make` has no undo, legality
   is checked after making with `illegal()`. `dead()` is insufficient
   material.
-- playouts: `make_random` picks a random pseudo-legal move, makes it on the
+- playouts: `gives_check` is a direct-check test (moved piece attacks the
+  king from its destination, via the 0x88 delta tables `ray_dir` and
+  `knight_hop` built in `init_rays`); it ignores discovered checks on
+  purpose, verified exact otherwise against make+in_check. `make_random` picks a random pseudo-legal move, makes it on the
   board, restores a saved copy if the king is left in check, and tries
   again; this is uniform over legal moves. `playout` returns 2/1/0 for the
   side to move at its start. `step_uniform` and `step_piece` are the two
@@ -67,8 +70,9 @@ Binaries are git-ignored and shipped as GitHub releases.
    depth 4 = 3894594.
 2. `printf 'bench 5\nquit\n' | ./roller` for speed and how games end.
    Baseline on the user's Ryzen 9 9950X, 32 threads, clang build, defaults
-   (CapturePercent 50): 810k games/s, 148M plies/s, 78% of games end as
-   dead positions. CapturePercent 0: 400k games/s, 110M plies/s. Single
+   (CapturePercent 50, CaptureBest, CheckPercent 50): 780k games/s, 131M
+   plies/s, 82% of games end as dead positions, 9% in mate. No biases:
+   400k games/s, 110M plies/s. Single
    thread about 5M plies/s. A change that costs more than a few percent
    needs a reason, but speed is not strength: test with games.
 3. A fastchess gauntlet with the Windows exe. Run it from a scratch
@@ -81,9 +85,15 @@ Binaries are git-ignored and shipped as GitHub releases.
    self-play with a fixed `nodes=` budget (nodes = games per move for this
    engine), which is also immune to CPU contention:
    `~/fastchess/fastchess -engine cmd=./roller.exe name=New option.X=... -engine cmd=./roller.exe name=Old -each nodes=60000 proto=uci option.Threads=7 -rounds 20 -games 2 -repeat -concurrency 4 -pgnout file=sp.pgn`
-   Results so far: CapturePercent 50 beat 0 by 33-7 at 60k games/move;
-   ReplyMin lost 4.5-15.5 at 300k games/move; ClipScore=Material and
-   Policy=Piece made no difference in gauntlets. Version 1.0 (pure
+   Results so far (40-game self-play at 60k games/move unless noted):
+   CapturePercent 50 beat 0 by 33-7; CaptureBest beat random captures
+   28-12; CheckPercent 50 on top of CaptureBest won 26.5 and 25.5 (25 was
+   flat at 18 and 16, 75 scored 22); CapturePercent 75 and 100 with
+   CaptureBest lost 15.5 and 4.5; ReplyMin lost 4.5-15.5 at 300k
+   games/move; ClipScore=Material and Policy=Piece made no difference in
+   gauntlets. Each default change was then checked with the 12-game retro
+   gauntlet at 20+0.2 on 14 threads: 1.0 scored 3.5, 1.1 scored 6, 1.2
+   scored 5 (noise; trust the self-play). Version 1.0 (pure
    uniform) scored 3.5/12 against the retro six at 20+0.2 on 14 threads.
    The README's "What was tried" section records findings; keep it current.
 4. When piping `quit` after `go`, sleep first; otherwise the search is
@@ -98,13 +108,14 @@ Binaries are git-ignored and shipped as GitHub releases.
   with a short note. Bump `NAME` in `roller.c` to match.
 - Option names are part of the user's tournament config once added to
   Myracle: `Threads`, `ClipPlies`, `Policy`, `ClipScore`, `CapturePercent`,
-  `ReplyMin`, `MoveOverhead`, `TimeDivisor`.
+  `CaptureBest`, `CheckPercent`, `ReplyMin`, `MoveOverhead`, `TimeDivisor`.
   Add options rather than renaming.
 - Keep it one file, plain C11, no dependencies beyond pthreads.
 
 ## Ideas queued (see README "Ideas not yet tried")
 
-Most-valuable-capture preference, check preference, weighted piece choice.
+Avoiding recapture or attacked squares inside the random game, promotion
+preference, weighted piece choice.
 Each should be an option with the current behaviour as default, measured
 with `bench` and self-play before and after, then documented in the README
 whether it worked or not.

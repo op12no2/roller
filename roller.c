@@ -5,9 +5,12 @@
  * and score them win 2, draw 1, loss 0. The move with the most points per
  * game is played. Monte Carlo tree search without the tree. The random
  * games pick uniformly among legal moves, except that a side which can
- * capture does so CapturePercent of the time (default 50: in self-play this
- * one bias beat pure random 33-7, because material only matters in a world
- * where hanging pieces get taken). The only other knowledge is the rules of
+ * capture does so CapturePercent of the time, taking the most valuable
+ * victim (CaptureBest), and a side which can give a direct check does so
+ * CheckPercent of the time. Defaults 50, on, 50: together about 500 Elo
+ * over pure random in self-play, because material and king safety only
+ * matter in a world where hanging pieces get taken and exposed kings get
+ * checked. The only other knowledge is the rules of
  * chess: checkmate, stalemate, the fifty-move rule and dead positions end a
  * game; games longer than ClipPlies plies are cut off and scored as draws
  * (or by material with ClipScore=Material, which tested as no better).
@@ -20,8 +23,9 @@
  *
  * Options: Threads, ClipPlies, Policy (Uniform: every legal move equally
  * likely; Piece: pick one of your pieces at random, then one of its moves),
- * ClipScore, CapturePercent, ReplyMin (score a move by its worst opponent
- * reply, from the games already played; tested worse, off by default),
+ * ClipScore, CapturePercent, CaptureBest, CheckPercent, ReplyMin (score a
+ * move by its worst opponent reply, from the games already played; tested
+ * worse, off by default),
  * MoveOverhead, TimeDivisor. Console: d, eval, perft N, bench [seconds].
  */
 #define _GNU_SOURCE
@@ -41,7 +45,7 @@
 #include <unistd.h>
 #endif
 
-#define NAME "Roller 1.1"
+#define NAME "Roller 1.2"
 #define AUTHOR "Claude Fable 5.1"
 
 /* ---------------------------------------------------------------- board */
@@ -313,6 +317,8 @@ static int opt_threads = 1, opt_clip = 300, opt_policy = POL_UNIFORM, opt_overhe
 static int opt_clipmat = 0;      /* score clipped games by material instead of as draws */
 static int opt_capture = 50;     /* percent chance of playing a capture when one exists (Uniform policy) */
 static int opt_replymin = 0;     /* score a root move by its worst opponent reply, using the games already played */
+static int opt_check = 50;       /* percent chance of playing a checking move when one exists (direct checks only) */
+static int opt_mvv = 1;          /* when capturing, only the most valuable victims are considered */
 
 typedef struct {
   uint64_t rng;
@@ -352,14 +358,60 @@ static inline int is_capture(const Board *b, Move m) {
   return b->sq[to] || (to == b->ep && TYPE(b->sq[MFROM(m)]) == P);
 }
 
+static inline int victim(const Board *b, Move m) {
+  int to = MTO(m);
+  return b->sq[to] ? val[TYPE(b->sq[to])] : (to == b->ep && TYPE(b->sq[MFROM(m)]) == P) ? val[P] : 0;
+}
+
+/* direction from a to b along a line, 0 if none; indexed by b - a + 0x77 */
+static int8_t ray_dir[240];
+static uint8_t knight_hop[240];
+
+static void init_rays(void) {
+  int d, k, i;
+  for (i = 0; i < 8; i++) {
+    for (k = 1, d = k_off[i]; k <= 7; k++) ray_dir[k * d + 0x77] = (int8_t)d;
+    knight_hop[n_off[i] + 0x77] = 1;
+  }
+}
+
+/* does the moved piece attack the enemy king from its destination?
+   discovered checks, castling and en passant oddities are ignored */
+static inline int gives_check(const Board *b, Move m) {
+  int from = MFROM(m), to = MTO(m), c = b->side, ksq = b->list[c ^ 1][0];
+  int t = MPROMO(m) ? MPROMO(m) : TYPE(b->sq[from]), d, s;
+  switch (t) {
+  case P: return ksq == to + (c == WHITE ? 15 : -15) || ksq == to + (c == WHITE ? 17 : -17);
+  case N: return knight_hop[ksq - to + 0x77];
+  case K: return 0;
+  default:
+    d = ray_dir[ksq - to + 0x77];
+    if (!d) return 0;
+    if (t == B && !(d & 15 && d != 1 && d != -1 && d != 16 && d != -16)) return 0;
+    if (t == R && (d == 15 || d == 17 || d == -15 || d == -17)) return 0;
+    for (s = to + d; s != ksq; s += d) if (b->sq[s] && s != from) return 0;
+    return 1;
+  }
+}
+
 static int step_uniform(Board *b, uint64_t *rng) {
-  Move m[MAXMOVES];
-  int n = gen_all(b, m);
+  Move moves[MAXMOVES], *m = moves;
+  int n = gen_all(b, m), i, nc = 0;
   if (opt_capture && rnd_below(rng, 100) < opt_capture) {
-    int i, nc = 0;
-    for (i = 0; i < n; i++) if (is_capture(b, m[i])) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
+    if (opt_mvv) {
+      int best = 0;
+      for (i = 0; i < n; i++) { int v = victim(b, m[i]); if (v > best) best = v; }
+      if (best) for (i = 0; i < n; i++) if (victim(b, m[i]) == best) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
+    } else {
+      for (i = 0; i < n; i++) if (is_capture(b, m[i])) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
+    }
     if (nc && make_random(b, m, nc, rng)) return 1;
-    return make_random(b, m + nc, n - nc, rng);
+    m += nc; n -= nc; nc = 0;
+  }
+  if (opt_check && rnd_below(rng, 100) < opt_check) {
+    for (i = 0; i < n; i++) if (gives_check(b, m[i])) { Move t = m[i]; m[i] = m[nc]; m[nc++] = t; }
+    if (nc && make_random(b, m, nc, rng)) return 1;
+    m += nc; n -= nc;
   }
   return make_random(b, m, n, rng);
 }
@@ -711,6 +763,7 @@ int main(void) {
   castle_mask[0x04] = 12; castle_mask[0x00] = 13; castle_mask[0x07] = 14;
   castle_mask[0x74] = 3; castle_mask[0x70] = 7; castle_mask[0x77] = 11;
   srand((unsigned)time(NULL));
+  init_rays();
   opt_threads = cpu_count();
   set_threads(opt_threads);
   set_fen(&root, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
@@ -728,6 +781,8 @@ int main(void) {
       out("option name ClipScore type combo default %s var Draw var Material\n", opt_clipmat ? "Material" : "Draw");
       out("option name CapturePercent type spin default %d min 0 max 100\n", opt_capture);
       out("option name ReplyMin type check default %s\n", opt_replymin ? "true" : "false");
+      out("option name CheckPercent type spin default %d min 0 max 100\n", opt_check);
+      out("option name CaptureBest type check default %s\n", opt_mvv ? "true" : "false");
       out("option name MoveOverhead type spin default %d min 0 max 5000\n", opt_overhead);
       out("option name TimeDivisor type spin default %d min 1 max 200\n", opt_divisor);
       out("uciok\n");
@@ -747,6 +802,8 @@ int main(void) {
       else if (!strcmp(name, "ClipScore")) opt_clipmat = !strcmp(value, "Material");
       else if (!strcmp(name, "CapturePercent")) { opt_capture = atoi(value); if (opt_capture < 0) opt_capture = 0; if (opt_capture > 100) opt_capture = 100; }
       else if (!strcmp(name, "ReplyMin")) opt_replymin = !strcmp(value, "true");
+      else if (!strcmp(name, "CheckPercent")) { opt_check = atoi(value); if (opt_check < 0) opt_check = 0; if (opt_check > 100) opt_check = 100; }
+      else if (!strcmp(name, "CaptureBest")) opt_mvv = !strcmp(value, "true");
       else if (!strcmp(name, "MoveOverhead")) opt_overhead = atoi(value);
       else if (!strcmp(name, "TimeDivisor")) { opt_divisor = atoi(value); if (opt_divisor < 1) opt_divisor = 1; }
     } else if (!strcmp(tok, "ucinewgame")) {
