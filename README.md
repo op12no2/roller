@@ -99,6 +99,10 @@ per move.
   destination the opponent attacks. Flat at every rate: 18, 23.5, 21, 19.5
   and 22 out of 40 for 25, 50, 50, 75 and 100 percent, at a 20% speed cost.
   Off.
+- **Clip length** at equal time (10s+0.1 self-play, 40 games each): 100
+  lost 15.5, 120 scored 21, 150 scored 27.5 and then 14 on the rerun, 200
+  scored 22, 600 scored 17.5, all against 300. Flat; shorter games buy more
+  of them but say less. 300 stays.
 - **Threefold repetition at the root**: a move that repeats a position for
   the third time scores exactly a draw. Rules, not a heuristic, and it
   stops the engine shuffling into a draw when it is ahead; two of the

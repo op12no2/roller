@@ -96,7 +96,9 @@ Binaries are git-ignored and shipped as GitHub releases.
    28-12; CheckPercent 50 on top of CaptureBest won 26.5 and 25.5 (25 was
    flat at 18 and 16, 75 scored 22); CapturePercent 75 and 100 with
    CaptureBest lost 15.5 and 4.5; QueenPromotion 19; SafePercent flat at
-   every rate (18 to 23.5 over five runs); ReplyMin lost 4.5-15.5 at 300k
+   every rate (18 to 23.5 over five runs); ClipPlies 100 to 600 flat at
+   equal time (150 scored 27.5 then 14: that is what 40-game noise looks
+   like); ReplyMin lost 4.5-15.5 at 300k
    games/move; ClipScore=Material and Policy=Piece made no difference in
    gauntlets. Each default change was then checked with the 12-game retro
    gauntlet at 20+0.2 on 14 threads: 1.0 scored 3.5, 1.1 scored 6, 1.2
@@ -105,6 +107,11 @@ Binaries are git-ignored and shipped as GitHub releases.
    The README's "What was tried" section records findings; keep it current.
 4. When piping `quit` after `go`, sleep first; otherwise the search is
    stopped at once.
+5. Clock: at 120+2 on 16 threads Roller used 172 s of the 202 s available
+   over a 41-move game, 6.7 s on the first move and never more, 3 s at
+   the end. Allocation is remaining/TimeDivisor + 3/4 increment, capped at
+   80% of remaining, minus MoveOverhead. At the tournament's 12 min + 8 s
+   the first move takes about 35 s. Re-check this after any change to `go`.
 
 ## Conventions
 
