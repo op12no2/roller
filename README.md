@@ -1,4 +1,4 @@
-# roller
+# Roller
 
 A chess engine with no search. For every legal move it plays random games
 to the end and plays the move whose games scored the most points (win 2,
@@ -28,6 +28,39 @@ Depth is the number of games played per root move, seldepth the longest
 game, nodes the number of positions played through. An `info string` line
 gives games per second, the best move's win percentage and how many games
 ended in mate or were clipped.
+
+## Roots
+
+Nothing in Roller is new; it is the oldest Monte Carlo idea in games,
+run fast. Bruce Abramson proposed in his 1987 Columbia thesis, [*The
+Expected-Outcome Model of Two-Player
+Games*](https://academiccommons.columbia.edu/doi/10.7916/D8GH9S2C)
+(short version: "Expected-Outcome: A General Model of Static Evaluation",
+*IEEE Trans. PAMI* 12(2), 1990), that the value of a position is its
+expected result under random play, and estimated it exactly as Roller
+does: random games to the end from the board after each legal move, the
+best estimate played, no lookahead. He beat the expert Othello evaluator
+48-2 with it at one to ten minutes a move, and found chess too slow to
+play, so he used the sampler to learn piece values instead. Bernd
+Brügmann's [*Monte Carlo Go*](http://www.ideanest.com/vegos/MonteCarloGo.pdf)
+(1993) made the same move for Go. Don Beal and Martin Smith's "Random
+Evaluations in Chess" (*ICCA Journal* 17(1), 1994) kept the randomness but
+put it under an alpha-beta search instead of over random games. Kocsis and
+Szepesvári's ["Bandit based Monte-Carlo
+Planning"](https://link.springer.com/chapter/10.1007/11871842_29) (ECML
+2006) added the tree, UCT, which is what "Monte Carlo tree search without
+the tree" refers to; Ramanujan, Sabharwal and Selman's ["On Adversarial
+Search Spaces and Sampling-Based
+Planning"](https://ojs.aaai.org/index.php/ICAPS/article/view/13437)
+(ICAPS 2010) explains why the tree did not help chess much: the game is
+full of shallow traps that random playouts cannot see.
+
+Roller's own additions are the capture and check biases in the random
+games, tuned by self-play (see "What was tried"), and the engineering:
+threads, the clip, the root repetition rule. Faithful recreations of
+Abramson's sampler and of UCT with Ramanujan's chess settings live in
+[retro](https://github.com/op12no2/retro) as `abramson` and `uct`, and the
+four of them, with Beal, make up the "Dice Against the Clock" tournament.
 
 ## Build
 
